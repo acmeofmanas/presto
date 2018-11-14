@@ -1,0 +1,162 @@
+FROM centos:latest
+LABEL maintainer="ducktree"
+LABEL environment="Development/QA"
+
+### GENERAL VARIABLES ###
+
+ENV USER 'presto'
+ENV APPLICATION 'prestodb'
+ENV HOSTNAME "${APPLICATION}.ducktree.local"
+ENV PRESTO_PATH '/opt/presto'
+ENV JAVA_SRC '/opt/oracle'
+
+### JAVA VARIABLES ###
+
+ENV JAVA_SYMLINK "${JAVA_SRC}/java"
+ENV JAVA_URL 'http://download.oracle.com/otn-pub/java/jdk/8u161-b12/2f38c3b165be4555a1fa6e98c45e0808/jdk-8u161-linux-x64.tar.gz'
+ENV JAVA_JDK 'jdk-8u161-linux-x64.tar.gz'
+ENV JAVA_VERSION 'jdk1.8.0_161'
+ENV JDK_PROFILE '/etc/profile.d/javahome.sh'
+
+### SSL VARIABLES ###
+
+ENV CERTIFICATE 'certificate.crt'
+ENV PRIVATEKEY 'privatekey.key'
+ENV PRIVATEKEYPASS 'sslpassphrase'
+ENV P12 'bundle.p12'
+ENV KEYSTORE "${APPLICATION}.jks"
+ENV SSLPATH "${PRESTO_PATH}/ssl"
+ENV VALIDITY '365'
+
+### PRESTO SERVER VARIABLES ###
+
+ENV PRESTO_URL 'https://repo1.maven.org/maven2/com/facebook/presto/presto-server/0.198/presto-server-0.198.tar.gz'
+ENV PRESTO_TGZ 'presto-server-0.198.tar.gz'
+ENV PRESTO_VERSION 'presto-server-0.198'
+ENV PRESTO_HTTPS 'true'
+ENV PRESTO_PORT '5665'
+ENV PRESTO_COORDINATOR_WORKERNODE 'true'
+ENV PRESTO_COORDINATOR_STATE 'true'
+ENV PRESTO_DISCOVERY 'true'
+ENV PRESTO_MAX_MEMORY '8GB'
+ENV PRESTO_MAX_MEMORY_PER_NODE '1GB'
+ENV PRESTO_JAVAXMX '-Xmx2G'
+ENV PRESTO_ENVIRONMENT 'development'
+ENV PRESTO_DATA "${PRESTO_PATH}/${APPLICATION}/presto-data"
+ENV PRESTO_NODE_UUID '/tmp/uuid'
+
+### PRESTO CLIENT VARIABLES ###
+
+ENV PRESTO_CLT_URL 'https://repo1.maven.org/maven2/com/facebook/presto/presto-cli/0.198/presto-cli-0.198-executable.jar'
+ENV PRESTO_CLT_JAR 'presto-cli-0.198-executable.jar'
+ENV PRESTO_CLT_DIR 'presto-client'
+
+### PRESTO CONFIGURATION VARIABLES ###
+
+ENV PRESTO_CONFIG_PROPERTIES "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/config.properties"
+ENV PRESTO_JVM_CONFIG "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/jvm.config"
+ENV PRESTO_NODE_PROPERTIES "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/node.properties"
+ENV PRESTO_LOG_PROPERTIES "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/log.properties"
+ENV PRESTO_KAFKA_PROPERTIES "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/catalog/kafka.properties"
+ENV PRESTO_HIVE_PROPERTIES "${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/catalog/hive.properties"
+
+### HIVE VARIABLES ###
+
+ENV HIVE_HOSTS "thrift://hostname:9083"
+ENV HIVE_CONFIG "${PRESTO_PATH}/${APPLICATION}/hive/core-site.xml,${PRESTO_PATH}/${APPLICATION}/hive/hdfs-site.xml"
+
+### KAFKA VARIABLES ###
+
+ENV KAFKA_HOSTS "hostname:port"
+ENV KAFKA_TOPICS "topicname"
+
+RUN set -x \
+
+&& yum -y install wget epel-release net-tools openssl \
+### Presto Tarball ###
+&& wget ${PRESTO_URL} \
+&& tar -xzf ${PRESTO_TGZ} \
+&& rm -rf ${PRESTO_TGZ} \
+&& mkdir -p ${PRESTO_PATH}/${APPLICATION} \
+&& mkdir -p ${PRESTO_DATA} \
+&& mkdir -p ${PRESTO_PATH}/${APPLICATION}/hive \
+&& mv ${PRESTO_VERSION} ${PRESTO_PATH}/${APPLICATION} \
+&& mkdir -p ${PRESTO_PATH}/${APPLICATION}/${PRESTO_VERSION}/etc/catalog \
+&& wget ${PRESTO_CLT_URL} \
+&& mkdir -p ${PRESTO_PATH}/${APPLICATION}/${PRESTO_CLT_DIR} \
+&& mv ${PRESTO_CLT_JAR} ${PRESTO_PATH}/${APPLICATION}/${PRESTO_CLT_DIR}/presto \
+&& chown -R ${USER} ${PRESTO_PATH}/${APPLICATION} \
+&& chmod -R 755 ${PRESTO_PATH}/${APPLICATION} \
+&& chmod -x ${PRESTO_PATH}/${APPLICATION}/${PRESTO_CLT_DIR}/presto \
+
+### Setting JAVA_HOME ###
+&& mkdir -p ${JAVA_SRC} \
+&& cd ${JAVA_SRC} \
+&& wget --no-check-certificate -c --header "Cookie: oraclelicense=accept-securebackup-cookie" ${JAVA_URL}\
+&& tar xvf ${JAVA_JDK} \
+&& rm -rf ${JAVA_JDK} \
+&& ln -s ${JAVA_SRC}/${JAVA_VERSION} ${JAVA_SYMLINK} \
+&& echo "export JAVA_HOME=${JAVA_SYMLINK}" > ${JDK_PROFILE} \
+&& echo 'PATH=$JAVA_HOME/bin:$PATH' >> ${JDK_PROFILE} \
+&& source ${JDK_PROFILE} \
+
+### Creating Self-Signed Certificate ###
+&& mkdir -p ${SSLPATH} \
+&& cd ${SSLPATH} \
+&& openssl req -newkey rsa:2048 -nodes -keyout ${PRIVATEKEY} -x509 -days ${VALIDITY} -out ${CERTIFICATE} -passin pass:${PRIVATEKEYPASS} -subj "/OU=${APPLICATION}/CN=${HOSTNAME}/" \
+&& openssl pkcs12 -inkey ${PRIVATEKEY} -in ${CERTIFICATE} -export -out ${P12} -passin pass:${PRIVATEKEYPASS} -passout pass:${PRIVATEKEYPASS} \
+&& keytool -noprompt -importkeystore -srckeystore ${P12} -srcstoretype pkcs12 -srcstorepass ${PRIVATEKEYPASS} -destkeystore ${KEYSTORE} -deststoretype JKS -deststorepass ${PRIVATEKEYPASS} \
+
+### Presto - Config Properties ###
+&& echo -e "coordinator=${PRESTO_COORDINATOR_STATE}" > ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "node-scheduler.include-coordinator=${PRESTO_COORDINATOR_WORKERNODE}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "http-server.https.enabled=${PRESTO_HTTPS}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "http-server.https.port=${PRESTO_PORT}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "query.max-memory=${PRESTO_MAX_MEMORY}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "query.max-memory-per-node=${PRESTO_MAX_MEMORY_PER_NODE}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "discovery-server.enabled=${PRESTO_DISCOVERY}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "discovery.uri=https://${HOSTNAME}:${PRESTO_PORT}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "node.internal-address=${HOSTNAME}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "http-server.https.keystore.path=${SSLPATH}/${KEYSTORE}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "http-server.https.keystore.key=${PRIVATEKEYPASS}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "internal-communication.https.required=${PRESTO_HTTPS}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "internal-communication.https.keystore.path=${SSLPATH}/${KEYSTORE}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "internal-communication.https.keystore.key=${PRIVATEKEYPASS}" >> ${PRESTO_CONFIG_PROPERTIES} \
+&& echo -e "http-server.https.secure-random-algorithm=SHA1PRNG" >> ${PRESTO_CONFIG_PROPERTIES} \
+
+### Presto - JVM Config ###
+&& echo -e "-server" > ${PRESTO_JVM_CONFIG} \
+&& echo -e "${PRESTO_JAVAXMX}" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:+UseG1GC" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:G1HeapRegionSize=32M" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:+UseGCOverheadLimit" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:+ExplicitGCInvokesConcurrent" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:+HeapDumpOnOutOfMemoryError" >> ${PRESTO_JVM_CONFIG} \
+&& echo -e "-XX:+ExitOnOutOfMemoryError" >> ${PRESTO_JVM_CONFIG} \
+
+### Presto - Node Properties ###
+&& uuidgen > ${PRESTO_NODE_UUID} \
+&& echo -e "node.environment=${PRESTO_ENVIRONMENT}" > ${PRESTO_NODE_PROPERTIES} \
+&& echo -e "node.id=`cat ${PRESTO_NODE_UUID}`" >> ${PRESTO_NODE_PROPERTIES} \
+&& echo -e "node.data-dir=${PRESTO_DATA}" >> ${PRESTO_NODE_PROPERTIES} \
+
+### Presto - Log Properties ###
+&& echo -e "com.facebook.presto=INFO" > ${PRESTO_LOG_PROPERTIES} \
+
+### Presto - Kafka Properties ###
+&& touch ${PRESTO_KAFKA_PROPERTIES} \
+&& echo -e "connector.name=kafka" > ${PRESTO_KAFKA_PROPERTIES} \
+&& echo -e "kafka.nodes=${KAFKA_HOSTS}" >> ${PRESTO_KAFKA_PROPERTIES} \
+&& echo -e "kafka.table-names=${KAFKA_TOPICS}" >> ${PRESTO_KAFKA_PROPERTIES} \
+&& echo -e "kafka.hide-internal-columns=false" >> ${PRESTO_KAFKA_PROPERTIES} \
+
+### Presto - Hive Properties ###
+&& touch ${PRESTO_HIVE_PROPERTIES} \
+&& echo -e "connector.name=hive-hadoop2" > ${PRESTO_HIVE_PROPERTIES} \
+&& echo -e "hive.metastore.uri=${HIVE_HOSTS}" >> ${PRESTO_HIVE_PROPERTIES} \
+&& echo -e "hive.config.resources=${HIVE_CONFIG}" >> ${PRESTO_HIVE_PROPERTIES}
+
+ADD presto-configs ${PRESTO_PATH}/${APPLICATION}/hive
+EXPOSE ${PRESTO_PORT}
+USER ${USER}
+CMD ["/opt/presto/presto-server-0.198/bin/launcher", "run"]
